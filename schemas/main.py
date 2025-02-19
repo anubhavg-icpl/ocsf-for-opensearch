@@ -59,76 +59,86 @@ def ensure_directories():
     print(f"Directories created/verified at: {BASE_DIR}")
 
 def ISM_INIT(client):
-    ## This function creates the ISM policy
-    ism_policy = {
-        "policy": {
-            "policy_id": "rollover-expiration-policy",
-            "description": "This policy rollsover the index daily or if it reaches 40gb. It also expires logs older than 15 days",
-            "default_state": "rollover",
-            "states": [
-                {
-                    "name": "rollover",
-                    "actions": [
-                        {
-                            "retry": {
-                                "count": 3,
-                                "backoff": "exponential",
-                                "delay": "1h"
-                            },
-                            "rollover": {
-                                "min_size": "40gb",
-                                "min_index_age": "1d",
-                                "copy_alias": False
-                            }
-                        }
-                    ],
-                    "transitions": [
-                        {
-                            "state_name": "hot"
-                        }
-                    ]
-                },
-                {
-                    "name": "hot",
-                    "actions": [],
-                    "transitions": [
-                        {
-                            "state_name": "delete",
-                            "conditions": {
-                                "min_index_age": "15d"
-                            }
-                        }
-                    ]
-                },
-                {
-                    "name": "delete",
-                    "actions": [
-                        {
-                            "timeout": "5h",
-                            "retry": {
-                                "count": 3,
-                                "backoff": "exponential",
-                                "delay": "1h"
-                            },
-                            "delete": {}
-                        }
-                    ],
-                    "transitions": []
-                }
-            ],
-            "ism_template": [
-                {
-                    "index_patterns": [
-                        "ocsf-*"
-                    ],
-                    "priority": 9
-                }
-            ]
-        }
-    }
     try:
-        client.plugins.index_management.put_policy(policy = "rollover-expiration-policy", body=ism_policy)
-        print ("ISM Policy created")
+        # Delete existing policy if it exists
+        try:
+            client.plugins.index_management.delete_policy(policy_id="rollover-expiration-policy")
+        except:
+            pass
+        
+        # Create new policy
+        ism_policy = {
+            "policy": {
+                "policy_id": "rollover-expiration-policy",
+                "description": "This policy rollsover the index daily or if it reaches 40gb. It also expires logs older than 15 days",
+                "default_state": "rollover",
+                "states": [
+                    {
+                        "name": "rollover",
+                        "actions": [
+                            {
+                                "retry": {
+                                    "count": 3,
+                                    "backoff": "exponential",
+                                    "delay": "1h"
+                                },
+                                "rollover": {
+                                    "min_size": "40gb",
+                                    "min_index_age": "1d",
+                                    "copy_alias": False
+                                }
+                            }
+                        ],
+                        "transitions": [
+                            {
+                                "state_name": "hot"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "hot",
+                        "actions": [],
+                        "transitions": [
+                            {
+                                "state_name": "delete",
+                                "conditions": {
+                                    "min_index_age": "15d"
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "name": "delete",
+                        "actions": [
+                            {
+                                "timeout": "5h",
+                                "retry": {
+                                    "count": 3,
+                                    "backoff": "exponential",
+                                    "delay": "1h"
+                                },
+                                "delete": {}
+                            }
+                        ],
+                        "transitions": []
+                    }
+                ],
+                "ism_template": [
+                    {
+                        "index_patterns": [
+                            "ocsf-*"
+                        ],
+                        "priority": 9
+                    }
+                ]
+            }
+        }
+        try:
+            client.plugins.index_management.put_policy(policy = "rollover-expiration-policy", body=ism_policy)
+            print ("ISM Policy created")
+        except Exception as e:
+            print(f"Error creating ISM Policy: {e}")
+            pass
     except Exception as e:
         print(f"Error creating ISM Policy: {e}")
         pass
@@ -146,41 +156,69 @@ def alias_init(client):
         "ocsf-1.1.0-4003-dns_activity",
         "ocsf-1.1.0-6003-api_activity",
     ]
-    for index in index_list:
-        # Create the index
-        try:
-            index_name = f"<{index}-{{now/d}}-000000>"
-            client.indices.create(index=index_name, body = {})
-            print (f"created index {index}")
-        except Exception as e:
-            print(f"Error creating {index} index: {e}")
-            pass
-
-        # Create the alias
-        try:
-            alias_name = index
-            alias_index = f"{index}-*"
-            client.indices.put_alias(index=alias_index, name=alias_name)
-            print (f"created alias {alias_name}")
-        except Exception as e:
-            print(f"Error creating {alias_name} alias: {e}")
-            pass
-
-        ## Set the index settings
-        settings = {
-            "settings": {
-                "index": {
-                    "plugins": {
-                        "index_state_management": {
-                            "rollover_alias": f"{index}"
-                        }
+    
+    # Default index settings
+    default_settings = {
+        "settings": {
+            "index": {
+                "max_docvalue_fields_search": 500,
+                "mapping.total_fields.limit": 4000,
+                "number_of_shards": 1,
+                "number_of_replicas": 1,
+                "plugins": {
+                    "index_state_management": {
+                        "rollover_alias": None  # Will be set per index
                     }
                 }
             }
+        },
+        "mappings": {
+            "dynamic": "true",
+            "date_detection": True,
+            "dynamic_date_formats": ["strict_date_optional_time||epoch_second"],
+            "dynamic_templates": [
+                {
+                    "strings_as_keywords": {
+                        "match_mapping_type": "string",
+                        "mapping": {
+                            "type": "keyword",
+                            "ignore_above": 1024
+                        }
+                    }
+                }
+            ],
+            "properties": {
+                "time": {
+                    "type": "date",
+                    "format": "strict_date_optional_time||epoch_second"
+                },
+                "@timestamp": {
+                    "type": "date",
+                    "format": "strict_date_optional_time||epoch_second"
+                }
+            }
         }
+    }
 
-        client.indices.put_settings(index=index_name, body=settings)
-        print (f"Applied settings to {index_name}")
+    for index in index_list:
+        try:
+            # Update settings for this specific index
+            settings = default_settings.copy()
+            settings["settings"]["index"]["plugins"]["index_state_management"]["rollover_alias"] = index
+            
+            index_name = f"<{index}-{{now/d}}-000000>"
+            client.indices.create(index=index_name, body=settings)
+            print(f"Created index {index} with updated settings")
+            
+            # Create alias
+            alias_name = index
+            alias_index = f"{index}-*"
+            client.indices.put_alias(index=alias_index, name=alias_name)
+            print(f"Created alias {alias_name}")
+            
+        except Exception as e:
+            print(f"Error handling index {index}: {e}")
+            continue
 
 def install_component_templates(client):
     for root, dirs, files in os.walk(COMPONENT_TEMPLATES_DIR):
